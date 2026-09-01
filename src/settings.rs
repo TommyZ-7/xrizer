@@ -3,6 +3,66 @@ use openvr as vr;
 use openvr::EVRSettingsError;
 use std::ffi::CStr;
 use std::os::raw::c_char;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+
+// ponytail: global scale, per-app map if needed
+pub(crate) static SUPERSAMPLE_SCALE: AtomicU32 = AtomicU32::new(100);
+static MANUAL_OVERRIDE: AtomicU32 = AtomicU32::new(1);
+static LAST_POLL: AtomicU64 = AtomicU64::new(0);
+
+fn scale_file_candidates() -> Vec<std::path::PathBuf> {
+    let mut v = Vec::new();
+    if let Ok(p) = std::env::var("XRIZER_SCALE_FILE") {
+        v.push(p.into());
+    }
+    if let Ok(d) = std::env::var("XDG_RUNTIME_DIR") {
+        v.push(std::path::PathBuf::from(d).join("xrizer_scale"));
+    }
+    if let Ok(h) = std::env::var("HOME") {
+        v.push(std::path::PathBuf::from(h.clone()).join(".config/xrizer_scale"));
+        v.push(std::path::PathBuf::from(h).join(".local/share/xrizer_scale"));
+    }
+    v.push(std::path::PathBuf::from("/tmp/xrizer_scale"));
+    v
+}
+
+pub(crate) fn maybe_reload_scale() {
+    if cfg!(test) && std::env::var("XRIZER_TEST_FILE_POLL").is_err() {
+        return;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let last = LAST_POLL.load(Ordering::Relaxed);
+    if now.wrapping_sub(last) < 500 {
+        return;
+    }
+    LAST_POLL.store(now, Ordering::Relaxed);
+    for path in scale_file_candidates() {
+        if let Ok(s) = std::fs::read_to_string(&path) {
+            if let Ok(val) = s.trim().parse::<f32>() {
+                let val = if val > 4.0 { val / 100.0 } else { val };
+                let clamped = val.clamp(0.1, 4.0);
+                SUPERSAMPLE_SCALE.store((clamped * 100.0) as u32, Ordering::Relaxed);
+                break;
+            }
+        }
+    }
+}
+
+fn persist_scale(clamped: f32) {
+    if cfg!(test) && std::env::var("XRIZER_TEST_FILE_POLL").is_err() {
+        return;
+    }
+    let txt = format!("{clamped:.3}");
+    for path in scale_file_candidates() {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(&path, &txt);
+    }
+}
 
 #[derive(Default, macros::InterfaceImpl)]
 #[interface = "IVRSettings"]
@@ -36,7 +96,12 @@ impl vr::IVRSettings003_Interface for Settings {
     ) {
         let section = unsafe { CStr::from_ptr(section) }.to_string_lossy();
         let key = unsafe { CStr::from_ptr(settings_key) }.to_string_lossy();
-        debug!("Setting bool on {section}/{key} to {value}");
+        if section == "steamvr" && key == "supersampleManualOverride" {
+            MANUAL_OVERRIDE.store(u32::from(value), Ordering::Relaxed);
+            debug!("Set supersampleManualOverride={value}");
+        } else {
+            debug!("Setting bool on {section}/{key} to {value}");
+        }
         if let Some(error) = unsafe { error.as_mut() } {
             *error = EVRSettingsError::None;
         }
@@ -51,7 +116,12 @@ impl vr::IVRSettings003_Interface for Settings {
     ) {
         let section = unsafe { CStr::from_ptr(section) }.to_string_lossy();
         let key = unsafe { CStr::from_ptr(settings_key) }.to_string_lossy();
-        debug!("Setting int on {section}/{key} to {value}");
+        if section == "steamvr" && key == "supersampleManualOverride" {
+            MANUAL_OVERRIDE.store(u32::from(value != 0), Ordering::Relaxed);
+            debug!("Set supersampleManualOverride={value}");
+        } else {
+            debug!("Setting int on {section}/{key} to {value}");
+        }
         if let Some(error) = unsafe { error.as_mut() } {
             *error = EVRSettingsError::None;
         }
@@ -66,7 +136,14 @@ impl vr::IVRSettings003_Interface for Settings {
     ) {
         let section = unsafe { CStr::from_ptr(section) }.to_string_lossy();
         let key = unsafe { CStr::from_ptr(settings_key) }.to_string_lossy();
-        debug!("Setting float on {section}/{key} to {value}");
+        if section == "steamvr" && key == "supersampleScale" {
+            let clamped = value.clamp(0.1, 4.0);
+            SUPERSAMPLE_SCALE.store((clamped * 100.0) as u32, Ordering::Relaxed);
+            persist_scale(clamped);
+            debug!("Set supersampleScale={clamped} (raw {value})");
+        } else {
+            debug!("Setting float on {section}/{key} to {value}");
+        }
         if let Some(error) = unsafe { error.as_mut() } {
             *error = EVRSettingsError::None;
         }
@@ -99,6 +176,9 @@ impl vr::IVRSettings003_Interface for Settings {
         if let Some(error) = unsafe { error.as_mut() } {
             *error = EVRSettingsError::None;
         }
+        if section == "steamvr" && key == "supersampleManualOverride" {
+            return MANUAL_OVERRIDE.load(Ordering::Relaxed) != 0;
+        }
         debug!("Getting bool on {section}/{key}");
         false
     }
@@ -114,6 +194,9 @@ impl vr::IVRSettings003_Interface for Settings {
         if let Some(error) = unsafe { error.as_mut() } {
             *error = EVRSettingsError::None;
         }
+        if section == "steamvr" && key == "supersampleManualOverride" {
+            return MANUAL_OVERRIDE.load(Ordering::Relaxed) as i32;
+        }
         debug!("Getting int on {section}/{key}");
         0
     }
@@ -128,6 +211,10 @@ impl vr::IVRSettings003_Interface for Settings {
         let key = unsafe { CStr::from_ptr(settings_key) }.to_string_lossy();
         if let Some(error) = unsafe { error.as_mut() } {
             *error = EVRSettingsError::None;
+        }
+        if section == "steamvr" && key == "supersampleScale" {
+            maybe_reload_scale();
+            return SUPERSAMPLE_SCALE.load(Ordering::Relaxed) as f32 / 100.0;
         }
         debug!("Getting float on {section}/{key}");
         0.0
@@ -183,5 +270,101 @@ impl vr::IVRSettings002On003 for Settings {
             *error = EVRSettingsError::None;
         }
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use openvr::IVRSettings003_Interface;
+    use std::ffi::CString;
+    static TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn set_float(sec: &str, key: &str, v: f32) {
+        let s = Settings::default();
+        let cs = CString::new(sec).unwrap();
+        let ck = CString::new(key).unwrap();
+        let mut err = vr::EVRSettingsError::None;
+        s.SetFloat(cs.as_ptr(), ck.as_ptr(), v, &mut err as *mut _);
+        assert_eq!(err, vr::EVRSettingsError::None);
+    }
+    fn get_float(sec: &str, key: &str) -> f32 {
+        let s = Settings::default();
+        let cs = CString::new(sec).unwrap();
+        let ck = CString::new(key).unwrap();
+        let mut err = vr::EVRSettingsError::None;
+        s.GetFloat(cs.as_ptr(), ck.as_ptr(), &mut err as *mut _)
+    }
+
+    #[test]
+    fn supersample_scale_roundtrip() {
+        let _g = TEST_MUTEX.lock().unwrap();
+        SUPERSAMPLE_SCALE.store(100, Ordering::Relaxed);
+        set_float("steamvr", "supersampleScale", 0.7);
+        let v = get_float("steamvr", "supersampleScale");
+        assert!((v - 0.7).abs() < 0.01, "got {v}");
+        set_float("steamvr", "supersampleScale", 0.8);
+        assert!((get_float("steamvr", "supersampleScale") - 0.8).abs() < 0.01);
+        SUPERSAMPLE_SCALE.store(100, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn supersample_scale_clamp() {
+        let _g = TEST_MUTEX.lock().unwrap();
+        SUPERSAMPLE_SCALE.store(100, Ordering::Relaxed);
+        set_float("steamvr", "supersampleScale", 10.0);
+        assert_eq!(get_float("steamvr", "supersampleScale"), 4.0);
+        set_float("steamvr", "supersampleScale", 0.01);
+        assert_eq!(get_float("steamvr", "supersampleScale"), 0.1);
+        set_float("steamvr", "supersampleScale", 1.0);
+        assert!((get_float("steamvr", "supersampleScale") - 1.0).abs() < 0.01);
+        SUPERSAMPLE_SCALE.store(100, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn manual_override_roundtrip() {
+        let _g = TEST_MUTEX.lock().unwrap();
+        MANUAL_OVERRIDE.store(1, Ordering::Relaxed);
+        let s = Settings::default();
+        let sec = CString::new("steamvr").unwrap();
+        let key = CString::new("supersampleManualOverride").unwrap();
+        let mut err = vr::EVRSettingsError::None;
+        s.SetInt32(sec.as_ptr(), key.as_ptr(), 0, &mut err as *mut _);
+        assert_eq!(s.GetInt32(sec.as_ptr(), key.as_ptr(), &mut err as *mut _), 0);
+        assert!(!s.GetBool(sec.as_ptr(), key.as_ptr(), &mut err as *mut _));
+        s.SetBool(sec.as_ptr(), key.as_ptr(), true, &mut err as *mut _);
+        assert_eq!(s.GetInt32(sec.as_ptr(), key.as_ptr(), &mut err as *mut _), 1);
+        assert!(s.GetBool(sec.as_ptr(), key.as_ptr(), &mut err as *mut _));
+        MANUAL_OVERRIDE.store(1, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn file_poll_reload() {
+        let _g = TEST_MUTEX.lock().unwrap();
+        unsafe { std::env::set_var("XRIZER_TEST_FILE_POLL", "1") };
+        let tmp = std::env::temp_dir().join("xrizer_test_scale_file_poll");
+        let _ = std::fs::remove_file(&tmp);
+        unsafe { std::env::set_var("XRIZER_SCALE_FILE", tmp.to_str().unwrap()) };
+        LAST_POLL.store(0, Ordering::Relaxed);
+        SUPERSAMPLE_SCALE.store(100, Ordering::Relaxed);
+        std::fs::write(&tmp, "0.55").unwrap();
+        LAST_POLL.store(0, Ordering::Relaxed);
+        maybe_reload_scale();
+        assert!(
+            (SUPERSAMPLE_SCALE.load(Ordering::Relaxed) as f32 / 100.0 - 0.55).abs() < 0.01,
+            "got {}",
+            SUPERSAMPLE_SCALE.load(Ordering::Relaxed)
+        );
+        std::fs::write(&tmp, "150").unwrap();
+        LAST_POLL.store(0, Ordering::Relaxed);
+        maybe_reload_scale();
+        assert!(
+            (SUPERSAMPLE_SCALE.load(Ordering::Relaxed) as f32 / 100.0 - 1.5).abs() < 0.01
+        );
+        let _ = std::fs::remove_file(&tmp);
+        unsafe { std::env::remove_var("XRIZER_SCALE_FILE") };
+        unsafe { std::env::remove_var("XRIZER_TEST_FILE_POLL") };
+        LAST_POLL.store(0, Ordering::Relaxed);
+        SUPERSAMPLE_SCALE.store(100, Ordering::Relaxed);
     }
 }

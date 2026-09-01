@@ -10,7 +10,10 @@ use log::{debug, error, trace, warn};
 use openvr as vr;
 use openxr as xr;
 use std::ffi::{CStr, CString};
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::Ordering,
+};
 
 #[derive(Copy, Clone)]
 pub struct ViewData {
@@ -205,12 +208,22 @@ impl vr::IVRSystem026_Interface for System {
             )
             .unwrap();
 
+        // ponytail: global scale, per-app map if needed
+        crate::settings::maybe_reload_scale();
+        let scale =
+            crate::settings::SUPERSAMPLE_SCALE.load(Ordering::Relaxed) as f32 / 100.0;
+        let scale = scale.clamp(0.1, 4.0);
+
         if !width.is_null() {
-            unsafe { *width = views[0].recommended_image_rect_width };
+            unsafe {
+                *width = ((views[0].recommended_image_rect_width as f32 * scale) as u32).max(1)
+            };
         }
 
         if !height.is_null() {
-            unsafe { *height = views[0].recommended_image_rect_height };
+            unsafe {
+                *height = ((views[0].recommended_image_rect_height as f32 * scale) as u32).max(1)
+            };
         }
     }
     fn GetProjectionMatrix(&self, eye: vr::EVREye, near_z: f32, far_z: f32) -> vr::HmdMatrix44_t {
