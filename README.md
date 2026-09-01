@@ -69,6 +69,109 @@ cargo xbuild --release
 
 After building, the output directory can be used as a runtime directory. If you built the dev build, this will be `<path to xrizer repo>/target/debug`, and for the release build this is `<path to xrizer repo>/target/release`.
 
+## Arch Linux — Build & Install
+
+This fork adds dynamic resolution (`supersampleScale`) support. Tested on Arch Linux (2026-09).
+
+### 1. Dependencies
+```sh
+sudo pacman -S base-devel rust clang llvm pkgconf glslang vulkan-headers openxr
+# rust >=1.85 required (see rust-version in Cargo.toml)
+# glslang provides glslc for shader compilation
+# alternative: rustup + toolchain 1.85
+```
+
+If `glslc --version` is missing, `glslang` was not installed.
+
+### 2. Build
+
+```sh
+git clone https://github.com/TommyZ-7/xrizer.git
+cd xrizer
+# optional: checkout feature branch
+git checkout feature/dynamic-resolution
+
+cargo xbuild              # debug -> target/debug/libxrizer.so
+cargo xbuild --release    # release -> target/release/libxrizer.so
+# output is also available as target/(debug|release)/bin/linux64/vrclient.so -> libxrizer.so
+```
+
+No extra Cargo features required for dynamic resolution; `monado` (default) is enough for WiVRn/Monado.
+
+### 3. Install / Use
+
+Same as upstream — pick one:
+
+**a) VR_OVERRIDE (recommended for Steam/Proton, no system config):**
+Steam > VRChat > Properties > Launch Options:
+```
+VR_OVERRIDE=/home/$USER/xrizer/target/release %command%
+```
+Requires existing `$XDG_CONFIG_HOME/openvr/openvrpaths.vrpath` (create empty JSON if needed, see below).
+
+**b) openvrpaths.vrpath:**
+Add runtime path to `$XDG_CONFIG_HOME/openvr/openvrpaths.vrpath`:
+```json
+{
+  "version": 1,
+  "runtime": ["/home/USER/xrizer/target/release"]
+}
+```
+
+**With WiVRn (Monado) on Arch (system-wide):**
+```
+XR_RUNTIME_JSON=/run/host/usr/share/openxr/1/openxr_wivrn.json \
+VR_OVERRIDE=/home/$USER/xrizer/target/release \
+PRESSURE_VESSEL_FILESYSTEMS_RW=$HOME/.config \
+%command%
+```
+`PRESSURE_VESSEL_FILESYSTEMS_RW` shares the scale file into the Proton container (required for dynamic resolution via file).
+
+Verify runtime:
+```sh
+RUST_LOG=info VR_OVERRIDE=/home/$USER/xrizer/target/release vrchat 2>&1 | grep xrizer
+# log: $XDG_STATE_HOME/xrizer/xrizer.txt
+```
+
+## Dynamic Resolution (VRChat) — This Fork Only
+
+Upstream xrizer ignores `IVRSettings::SetFloat("steamvr","supersampleScale")`. This fork implements it and scales `IVRSystem::GetRecommendedRenderTargetSize` so VRChat (Unity OpenVR, OVRDR-tested Working) reallocates its RenderTexture without restart. `compositor` reuses or recreates swapchains (`src/compositor.rs:1244` `is_usable_swapchain`).
+
+### How it works
+* `src/settings.rs:84,148` — `SetFloat/GetFloat` for `steamvr/supersampleScale` (clamped 0.1–4.0) + `SetBool/SetInt32/GetBool/GetInt32` for `supersampleManualOverride` (OVRDR compatibility).
+* `src/system.rs:211` — `GetRecommendedRenderTargetSize` returns `recommended * scale`.
+* Cross-process (Proton vs host) via file poll (`src/settings.rs:28` `maybe_reload_scale` every 500 ms). `SetFloat` also persists to file so external tools propagate.
+
+### Control methods
+
+**1) Manual — echo to file (simplest, always works in container):**
+```sh
+echo 0.7 > ~/.config/xrizer_scale        # 70%  (0.7 or 70 both accepted, >4 interpreted as percent)
+echo 150 > ~/.config/xrizer_scale        # 150% -> 1.5
+echo 1.0 > ~/.config/xrizer_scale        # reset
+# file polled within 500 ms, VRChat resizes next GetRecommendedRenderTargetSize
+# alternative paths checked in order: $XRIZER_SCALE_FILE, $XDG_RUNTIME_DIR/xrizer_scale, ~/.config/xrizer_scale, ~/.local/share/xrizer_scale, /tmp/xrizer_scale
+```
+
+**2) Environment override:**
+```sh
+XRIZER_SCALE_FILE=/tmp/my_scale VR_OVERRIDE=... %command%
+echo 0.8 > /tmp/my_scale
+```
+
+**3) OpenVR API — OVRDR / custom tool (automatically file-backed):**
+```cpp
+vr::VRSettings()->SetFloat(vr::k_pch_SteamVR_Section, vr::k_pch_SteamVR_SupersampleScale_Float, 0.7f);
+// or for OVRDR: build https://github.com/Erimelowo/OpenVR-Dynamic-Resolution and run — it calls SetFloat internally
+vr::VRSystem()->GetRecommendedRenderTargetSize(&w,&h); // verify w/h scaled
+```
+OVRDR WorkingGames.md lists VRChat as Working; with this fork OVRDR adjusts VRChat resolution based on GPU/CPU frametime without restart.
+
+**Notes:**
+* Clamp 0.1–4.0 (0.5 lower bound recommended to keep UI readable). Expand (> current) causes `recreating swapchain` log + ~30 ms hitch; shrink reuses swapchain.
+* WiVRn encode resolution is separate; lowering VRChat + WiVRn scale together gives max saving.
+* Debug: `RUST_LOG=openvr_calls,system=debug cargo xbuild` then `grep supersampleScale ~/.local/state/xrizer/xrizer.txt`.
+
 # Contributing
 
 All contributions welcome.
