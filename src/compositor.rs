@@ -652,11 +652,12 @@ impl vr::IVRCompositor029_Interface for Compositor {
             system: &System,
             display_time: xr::Time,
             overlays: Option<&OverlayMan>,
+            color_scale_bias: bool,
         ) where
             for<'b> &'b crate::overlay::AnySwapchainMap:
                 TryInto<&'b crate::overlay::SwapchainMap<G::Api>, Error: std::fmt::Display>,
         {
-            ctrl.end_frame(session_data, system, display_time, overlays)
+            ctrl.end_frame(session_data, system, display_time, overlays, color_scale_bias)
         }
 
         let session_data = self.openxr.session_data.get();
@@ -674,12 +675,17 @@ impl vr::IVRCompositor029_Interface for Compositor {
         let system = self.system.force(|i| System::new(self.openxr.clone(), i));
         let display_time = self.openxr.display_time.get();
         let overlays = self.overlays.get();
+        let color_scale_bias = self
+            .openxr
+            .enabled_extensions
+            .khr_composition_layer_color_scale_bias;
 
         ctrl.with_any_graphics_mut::<end_frame>((
             &session_data,
             &system,
             display_time,
             overlays.as_deref(),
+            color_scale_bias,
         ));
 
         self.frame_state
@@ -1288,6 +1294,7 @@ impl<G: GraphicsBackend> FrameController<G> {
         system: &System,
         display_time: xr::Time,
         overlays: Option<&OverlayMan>,
+        color_scale_bias: bool,
     ) where
         for<'b> &'b crate::overlay::AnySwapchainMap:
             TryInto<&'b crate::overlay::SwapchainMap<G::Api>, Error: std::fmt::Display>,
@@ -1356,6 +1363,38 @@ impl<G: GraphicsBackend> FrameController<G> {
                     .space(session_data.tracking_space())
                     .views(&proj_layer_views),
             );
+        }
+
+        // ponytail: game-layer only dim via color scale; overlays stay bright.
+        // Box must outlive stream.end below since the layer only holds a pointer.
+        let mut _dim: Option<Box<xr::sys::CompositionLayerColorScaleBiasKHR>> = None;
+        if color_scale_bias && proj_layer.is_some() {
+            let b = crate::settings::brightness_value();
+            if b < 0.999 {
+                let mut payload = Box::new(xr::sys::CompositionLayerColorScaleBiasKHR {
+                    ty: xr::StructureType::COMPOSITION_LAYER_COLOR_SCALE_BIAS_KHR,
+                    next: std::ptr::null(),
+                    color_scale: xr::Color4f {
+                        r: b,
+                        g: b,
+                        b,
+                        a: 1.0,
+                    },
+                    color_bias: xr::Color4f {
+                        r: 0.0,
+                        g: 0.0,
+                        b: 0.0,
+                        a: 0.0,
+                    },
+                });
+                if let Some(layer) = proj_layer.take() {
+                    let mut raw = layer.into_raw();
+                    payload.next = raw.next as _;
+                    raw.next = &*payload as *const _ as *const _;
+                    proj_layer = Some(unsafe { xr::CompositionLayerProjection::from_raw(raw) });
+                }
+                _dim = Some(payload);
+            }
         }
 
         let mut layers: Vec<&xr::CompositionLayerBase<_>> = Vec::new();

@@ -172,6 +172,20 @@ OVRDR WorkingGames.md lists VRChat as Working; with this fork OVRDR adjusts VRCh
 * WiVRn encode resolution is separate; lowering VRChat + WiVRn scale together gives max saving.
 * Debug: `RUST_LOG=openvr_calls,system=debug cargo xbuild` then `grep supersampleScale ~/.local/state/xrizer/xrizer.txt`.
 
+## Display Brightness (Game Layers Only) — This Fork Only
+
+Dims only the game projection layer via `XR_KHR_composition_layer_color_scale_bias` (`src/compositor.rs` `end_frame`). Overlays (WayVR, etc.) stay bright. `1.0` = normal, `0.5` = half, `0.0` = black. Clamped 0.0–1.0. Requires a runtime with the extension (WiVRn v26.9 / Monado builds with it ON); without it brightness is silently ignored.
+
+```sh
+echo 0.5 > ~/.config/xrizer_brightness   # half (0.5 or 50 both accepted, >1 interpreted as percent)
+echo 1.0 > ~/.config/xrizer_brightness   # reset
+# same file order/env override style as xrizer_scale: $XRIZER_BRIGHTNESS_FILE, $XDG_RUNTIME_DIR/xrizer_brightness, ~/.config/xrizer_brightness, ~/.local/share/xrizer_brightness, /tmp/xrizer_brightness
+```
+
+```cpp
+vr::VRSettings()->SetFloat("xrizer", "brightness", 0.5f); // also persisted to file
+```
+
 # Contributing
 
 All contributions welcome.
