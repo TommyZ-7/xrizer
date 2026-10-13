@@ -10,10 +10,7 @@ use log::{debug, error, trace, warn};
 use openvr as vr;
 use openxr as xr;
 use std::ffi::{CStr, CString};
-use std::sync::{
-    Arc, Mutex,
-    atomic::Ordering,
-};
+use std::sync::{Arc, Mutex, atomic::Ordering};
 
 #[derive(Copy, Clone)]
 pub struct ViewData {
@@ -210,8 +207,7 @@ impl vr::IVRSystem026_Interface for System {
 
         // ponytail: global scale, per-app map if needed
         crate::settings::maybe_reload_scale();
-        let scale =
-            crate::settings::SUPERSAMPLE_SCALE.load(Ordering::Relaxed) as f32 / 100.0;
+        let scale = crate::settings::SUPERSAMPLE_SCALE.load(Ordering::Relaxed) as f32 / 100.0;
         let scale = scale.clamp(0.1, 4.0);
 
         if !width.is_null() {

@@ -438,9 +438,7 @@ mod tests {
         std::fs::write(&tmp, "50").unwrap();
         LAST_POLL_BRIGHTNESS.store(0, Ordering::Relaxed);
         maybe_reload_brightness();
-        assert!(
-            (BRIGHTNESS.load(Ordering::Relaxed) as f32 / 100.0 - 0.5).abs() < 0.01
-        );
+        assert!((BRIGHTNESS.load(Ordering::Relaxed) as f32 / 100.0 - 0.5).abs() < 0.01);
         let _ = std::fs::remove_file(&tmp);
         unsafe { std::env::remove_var("XRIZER_BRIGHTNESS_FILE") };
         unsafe { std::env::remove_var("XRIZER_TEST_FILE_POLL") };
@@ -457,10 +455,16 @@ mod tests {
         let key = CString::new("supersampleManualOverride").unwrap();
         let mut err = vr::EVRSettingsError::None;
         s.SetInt32(sec.as_ptr(), key.as_ptr(), 0, &mut err as *mut _);
-        assert_eq!(s.GetInt32(sec.as_ptr(), key.as_ptr(), &mut err as *mut _), 0);
+        assert_eq!(
+            s.GetInt32(sec.as_ptr(), key.as_ptr(), &mut err as *mut _),
+            0
+        );
         assert!(!s.GetBool(sec.as_ptr(), key.as_ptr(), &mut err as *mut _));
         s.SetBool(sec.as_ptr(), key.as_ptr(), true, &mut err as *mut _);
-        assert_eq!(s.GetInt32(sec.as_ptr(), key.as_ptr(), &mut err as *mut _), 1);
+        assert_eq!(
+            s.GetInt32(sec.as_ptr(), key.as_ptr(), &mut err as *mut _),
+            1
+        );
         assert!(s.GetBool(sec.as_ptr(), key.as_ptr(), &mut err as *mut _));
         MANUAL_OVERRIDE.store(1, Ordering::Relaxed);
     }
@@ -485,9 +489,7 @@ mod tests {
         std::fs::write(&tmp, "150").unwrap();
         LAST_POLL.store(0, Ordering::Relaxed);
         maybe_reload_scale();
-        assert!(
-            (SUPERSAMPLE_SCALE.load(Ordering::Relaxed) as f32 / 100.0 - 1.5).abs() < 0.01
-        );
+        assert!((SUPERSAMPLE_SCALE.load(Ordering::Relaxed) as f32 / 100.0 - 1.5).abs() < 0.01);
         let _ = std::fs::remove_file(&tmp);
         unsafe { std::env::remove_var("XRIZER_SCALE_FILE") };
         unsafe { std::env::remove_var("XRIZER_TEST_FILE_POLL") };

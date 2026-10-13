@@ -80,6 +80,9 @@ jobs:
         password: ${{ secrets.GITHUB_TOKEN }}
     steps:
     - uses: actions/checkout@v4
+      with:
+        # full history for `git describe` versioning
+        fetch-depth: 0
     - name: Build
       run: cargo xbuild --release --features static-openxr --verbose
     - name: Run tests

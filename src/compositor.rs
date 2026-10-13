@@ -657,7 +657,13 @@ impl vr::IVRCompositor029_Interface for Compositor {
             for<'b> &'b crate::overlay::AnySwapchainMap:
                 TryInto<&'b crate::overlay::SwapchainMap<G::Api>, Error: std::fmt::Display>,
         {
-            ctrl.end_frame(session_data, system, display_time, overlays, color_scale_bias)
+            ctrl.end_frame(
+                session_data,
+                system,
+                display_time,
+                overlays,
+                color_scale_bias,
+            )
         }
 
         let session_data = self.openxr.session_data.get();
