@@ -599,6 +599,8 @@ impl OwnedRenderModel {
 
         let mut normals = vec![Vec3::ZERO; verts.len()];
 
+        // shortcut: as_chunks needs Rust 1.88+, MSRV is 1.85; revisit on MSRV bump.
+        #[allow(clippy::chunks_exact_to_as_chunks)]
         for tri in indices.chunks_exact(3) {
             let ia = tri[0] as usize;
             let ib = tri[1] as usize;
