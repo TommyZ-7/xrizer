@@ -107,17 +107,20 @@ fn make_version() -> u32 {
 
 impl<C: Compositor> OpenXrData<C> {
     pub fn new(injector: &Injector) -> Result<Self, InitError> {
+        let platform_info = ();
+
         #[cfg(all(not(test), feature = "static-openxr"))]
-        let entry = xr::Entry::linked();
+        let entry = xr::Entry::linked(&platform_info).expect("Failed to linked OpenXR loader");
 
         #[cfg(all(not(test), not(feature = "static-openxr")))]
-        let entry = unsafe { xr::Entry::load() }
+        let entry = unsafe { xr::Entry::load(&platform_info) }
             .expect("Failed to load OpenXR loader — is libopenxr-loader installed?");
 
         #[cfg(test)]
-        let entry =
-            unsafe { xr::Entry::from_get_instance_proc_addr(fakexr::get_instance_proc_addr) }
-                .unwrap();
+        let entry = unsafe {
+            xr::Entry::from_get_instance_proc_addr(fakexr::get_instance_proc_addr, &platform_info)
+        }
+        .unwrap();
 
         let supported_exts = entry
             .enumerate_extensions()
@@ -142,10 +145,10 @@ impl<C: Compositor> OpenXrData<C> {
         #[cfg(feature = "monado")]
         if supported_exts
             .other
-            .contains(&XR_MNDX_XDEV_SPACE_EXTENSION_NAME.to_string())
+            .contains(&[XR_MNDX_XDEV_SPACE_EXTENSION_NAME.as_bytes(), b"\0"].concat())
         {
             exts.other
-                .push(XR_MNDX_XDEV_SPACE_EXTENSION_NAME.to_string());
+                .push([XR_MNDX_XDEV_SPACE_EXTENSION_NAME.as_bytes(), b"\0"].concat());
         }
 
         let instance = entry
@@ -159,6 +162,7 @@ impl<C: Compositor> OpenXrData<C> {
                 },
                 &exts,
                 &[],
+                &platform_info,
             )
             .map_err(InitError::InstanceCreationFailed)?;
 

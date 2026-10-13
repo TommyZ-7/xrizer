@@ -186,6 +186,8 @@ echo 1.0 > ~/.config/xrizer_brightness   # reset
 vr::VRSettings()->SetFloat("xrizer", "brightness", 0.5f); // also persisted to file
 ```
 
+The version xrizer reports comes from `git describe`, via the default `git-version` feature. Builds that don't have a git checkout - distribution packages and other builds from a source tarball - can disable that feature with `--no-default-features` (re-enabling the other default features they want, e.g. `--features monado`) and set `XRIZER_VERSION` at build time instead. `XRIZER_VERSION` takes precedence over `git describe` whenever it is set.
+
 # Contributing
 
 All contributions welcome.
