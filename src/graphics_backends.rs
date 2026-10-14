@@ -42,6 +42,11 @@ pub trait GraphicsBackend: Into<SupportedBackend> {
         submit_flags: vr::EVRSubmitFlags,
     ) -> xr::Extent2Di;
 
+    /// Submit eye copies staged by `copy_texture_to_swapchain` for `image_index`
+    /// in a single `queue_submit`. Called once both eyes are in. Default is a
+    /// no-op for backends without a queue (GL records nothing to submit).
+    fn flush_copies(&self, _image_index: usize) {}
+
     fn copy_overlay_to_swapchain(
         &mut self,
         texture: Self::OpenVrTexture,

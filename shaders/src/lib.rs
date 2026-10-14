@@ -58,6 +58,7 @@ pub fn compile(out_dir: &str) -> Vec<PathBuf> {
 
 fn compile_shader(input: &Path, output: &Path) {
     let success = Command::new("glslc")
+        .arg("-O")
         .arg(input)
         .arg("-o")
         .arg(output)

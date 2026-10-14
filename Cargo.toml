@@ -20,6 +20,12 @@ monado = ["dep:openxr_mndx_xdev_space"]
 # of a git checkout and pass XRIZER_VERSION instead.
 git-version = ["dep:vergen-gitcl"]
 
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+
 [workspace]
 members = ["xbuild"]
 

@@ -182,7 +182,7 @@ impl GraphicsBackend for VulkanData {
         let (extent, offset) = texture_extent_from_bounds(texture, bounds);
         log::trace!("{eye:?} extent: {extent:?} | bounds: {bounds:?}");
 
-        self.record_commands(buf, || unsafe {
+        self.record_only(buf, || unsafe {
             // transition swapchain image to TRANSFER_DST
             let swapchain_res = vk::ImageSubresourceRange {
                 aspect_mask: vk::ImageAspectFlags::COLOR,
@@ -311,6 +311,16 @@ impl GraphicsBackend for VulkanData {
         }
     }
 
+    fn flush_copies(&self, image_index: usize) {
+        // Stale bufs are never flushed: the caller only flushes when both eyes
+        // were really copied this frame, and every copy re-records its buf.
+        let Some(data) = self.real_data.as_ref() else {
+            return;
+        };
+        let bufs = [data.bufs[2 * image_index], data.bufs[2 * image_index + 1]];
+        self.submit_bufs(&bufs);
+    }
+
     fn copy_overlay_to_swapchain(
         &mut self,
         texture: *const vr::VRVulkanTextureData_t,
@@ -353,6 +363,7 @@ impl GraphicsBackend for VulkanData {
         };
 
         let swapchain_view = pipeline_data.image_views[image_index];
+        // shortcut: per-overlay game_view + framebuffer create/destroy; cache only if overlay-bound.
         let game_view = unsafe {
             self.device
                 .create_image_view(
@@ -463,6 +474,13 @@ impl GraphicsBackend for VulkanData {
 }
 impl VulkanData {
     pub fn record_commands(&self, buf: vk::CommandBuffer, cmds: impl FnOnce()) {
+        self.record_only(buf, cmds);
+        self.submit_bufs(&[buf]);
+    }
+
+    /// Record without submitting; staged eye copies are sent together by
+    /// `flush_copies` once both eyes are in.
+    pub fn record_only(&self, buf: vk::CommandBuffer, cmds: impl FnOnce()) {
         unsafe {
             self.device
                 .begin_command_buffer(
@@ -477,17 +495,20 @@ impl VulkanData {
 
         unsafe {
             self.device.end_command_buffer(buf).unwrap();
+        }
+    }
 
+    pub fn submit_bufs(&self, bufs: &[vk::CommandBuffer]) {
+        unsafe {
             self.device
                 .queue_submit(
                     self.queue,
-                    &[vk::SubmitInfo::default().command_buffers(&[buf])],
+                    &[vk::SubmitInfo::default().command_buffers(bufs)],
                     vk::Fence::null(),
                 )
                 .unwrap();
         }
     }
-
     pub fn new(data: &vr::VRVulkanTextureData_t) -> Self {
         let entry = new_entry();
         let instance = unsafe {
@@ -858,22 +879,32 @@ impl PipelineData {
 fn get_colorspace_corrected_format(format: vk::Format, color_space: vr::EColorSpace) -> vk::Format {
     static UNSUPPORTED: LazyLock<Mutex<HashSet<vk::Format>>> = LazyLock::new(Mutex::default);
     // https://github.com/ValveSoftware/openvr/wiki/Vulkan#image-formats
-    match color_space {
+    // Fast path first so the per-eye submit doesn't take the mutex.
+    let known = match color_space {
         vr::EColorSpace::Auto | vr::EColorSpace::Gamma => match format {
-            vk::Format::R8G8B8A8_UNORM | vk::Format::R8G8B8A8_SRGB => vk::Format::R8G8B8A8_SRGB,
-            vk::Format::B8G8R8A8_UNORM | vk::Format::B8G8R8A8_SRGB => vk::Format::B8G8R8A8_SRGB,
-            vk::Format::BC3_SRGB_BLOCK => format,
-            _ => {
-                if UNSUPPORTED.lock().unwrap().insert(format) {
-                    warn!("Unhandled texture format: {format:?}");
-                }
-                format
+            vk::Format::R8G8B8A8_UNORM | vk::Format::R8G8B8A8_SRGB => {
+                Some(vk::Format::R8G8B8A8_SRGB)
             }
+            vk::Format::B8G8R8A8_UNORM | vk::Format::B8G8R8A8_SRGB => {
+                Some(vk::Format::B8G8R8A8_SRGB)
+            }
+            vk::Format::BC3_SRGB_BLOCK => Some(format),
+            _ => None,
         },
         vr::EColorSpace::Linear => todo!("Linear colorspace not implemented yet"),
+    };
+    match known {
+        Some(f) => f,
+        None => {
+            if UNSUPPORTED.lock().unwrap().insert(format) {
+                warn!("Unhandled texture format: {format:?}");
+            }
+            format
+        }
     }
 }
 
+#[inline]
 fn texture_extent_from_bounds(
     texture: &vr::VRVulkanTextureData_t,
     bounds: vr::VRTextureBounds_t,

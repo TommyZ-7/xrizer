@@ -1283,6 +1283,11 @@ impl<G: GraphicsBackend> FrameController<G> {
 
         trace!("submitted {eye:?}");
         if self.eyes_submitted.iter().all(|eye| eye.is_some()) {
+            // Eye copies were only recorded above; send both in one submit.
+            // Null/inert frames record nothing, so there is nothing to flush.
+            if self.should_render && !self.submitting_null {
+                self.backend.flush_copies(self.image_index);
+            }
             // If the session was restarted while no frame was begun, nothing has been acquired from the new swapchain yet, so there is nothing to release
             if self.image_acquired
                 && let Some(data) = self.swapchain_data.as_mut()
@@ -1307,7 +1312,7 @@ impl<G: GraphicsBackend> FrameController<G> {
         for<'b> &'b crate::overlay::AnySwapchainMap:
             TryInto<&'b crate::overlay::SwapchainMap<G::Api>, Error: std::fmt::Display>,
     {
-        let mut proj_layer_views = Vec::new();
+        let mut proj_layer_views = Vec::with_capacity(2);
 
         if self.should_render
             && !self.submitting_null
@@ -1407,7 +1412,7 @@ impl<G: GraphicsBackend> FrameController<G> {
             }
         }
 
-        let mut layers: Vec<&xr::CompositionLayerBase<_>> = Vec::new();
+        let mut layers: Vec<&xr::CompositionLayerBase<_>> = Vec::with_capacity(4);
         if let Some(l) = proj_layer.as_ref() {
             layers.push(l);
         }
@@ -1454,6 +1459,7 @@ mod tests {
     use std::cell::Cell;
     use std::ffi::CStr;
     use std::mem::MaybeUninit;
+    use std::sync::atomic::AtomicUsize;
     use std::thread_local;
     use vr::EVRCompositorError::*;
     use vr::IVRCompositor028_Interface;
@@ -1461,6 +1467,7 @@ mod tests {
     pub struct FakeGraphicsData {
         vk: Arc<VulkanData>,
         swapchain_format: Option<u32>,
+        flushes: AtomicUsize,
     }
     thread_local! {
         static SWAPCHAIN_WIDTH: Cell<u32> = const { Cell::new(10) };
@@ -1568,6 +1575,10 @@ mod tests {
         ) -> openxr::Extent2Di {
             xr::Extent2Di::default()
         }
+
+        fn flush_copies(&self, _image_index: usize) {
+            self.flushes.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     impl FakeGraphicsData {
@@ -1589,6 +1600,7 @@ mod tests {
             Self {
                 vk,
                 swapchain_format: Option::None,
+                flushes: AtomicUsize::new(0),
             }
         }
     }
@@ -1649,6 +1661,25 @@ mod tests {
         fn check_frame_state(&self, state: fakexr::FrameState) {
             let session = self.comp.openxr.session_data.get().session.as_raw();
             assert_eq!(fakexr::session_frame_state(session), state);
+        }
+
+        fn flush_count(&self) -> usize {
+            let data = self.comp.openxr.session_data.get();
+            let lock = data.comp_data.0.lock().unwrap();
+            let DynFrameController::Fake(ctrl) = lock.as_ref().unwrap() else {
+                panic!("Frame controller was not set up or not faked!");
+            };
+            ctrl.backend.flushes.load(Ordering::Relaxed)
+        }
+
+        fn set_should_render(&self, render: bool) {
+            // fakexr never asks us to render; force the render path instead.
+            let data = self.comp.openxr.session_data.get();
+            let mut lock = data.comp_data.0.lock().unwrap();
+            let DynFrameController::Fake(ctrl) = lock.as_mut().unwrap() else {
+                panic!("Frame controller was not set up or not faked!");
+            };
+            ctrl.should_render = render;
         }
     }
 
@@ -1732,6 +1763,41 @@ mod tests {
 
         assert_eq!(f.wait_get_poses(), None);
         assert_eq!(f.submit(vr::EVREye::Left), None);
+    }
+
+    #[test]
+    fn both_eyes_flush_once_per_frame() {
+        let f = Fixture::new();
+        f.ensure_real_session(false);
+        assert_eq!(f.flush_count(), 0);
+
+        // Full render frame: nothing after the first eye, one flush for both.
+        assert_eq!(f.wait_get_poses(), None);
+        f.set_should_render(true);
+        assert_eq!(f.submit(vr::EVREye::Left), None);
+        assert_eq!(f.flush_count(), 0);
+        assert_eq!(f.submit(vr::EVREye::Right), None);
+        assert_eq!(f.flush_count(), 1);
+        f.set_should_render(false);
+
+        // Null frame records nothing: must not flush stale bufs.
+        SWAPCHAIN_WIDTH.set(0);
+        SWAPCHAIN_HEIGHT.set(0);
+        assert_eq!(f.wait_get_poses(), None);
+        f.set_should_render(true);
+        assert_eq!(f.submit(vr::EVREye::Left), None);
+        assert_eq!(f.submit(vr::EVREye::Right), None);
+        assert_eq!(f.flush_count(), 1);
+        SWAPCHAIN_WIDTH.set(10);
+        SWAPCHAIN_HEIGHT.set(10);
+        f.set_should_render(false);
+
+        // Next good frame flushes again.
+        assert_eq!(f.wait_get_poses(), None);
+        f.set_should_render(true);
+        assert_eq!(f.submit(vr::EVREye::Left), None);
+        assert_eq!(f.submit(vr::EVREye::Right), None);
+        assert_eq!(f.flush_count(), 2);
     }
 
     #[test]

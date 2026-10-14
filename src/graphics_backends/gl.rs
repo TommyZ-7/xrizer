@@ -176,12 +176,8 @@ impl GraphicsBackend for GlData {
         bounds: vr::VRTextureBounds_t,
         color_space: vr::EColorSpace,
     ) -> xr::SwapchainCreateInfo<Self::Api> {
-        let mut fmt = 0;
-        unsafe {
-            gl::BindTexture(gl::TEXTURE_2D, texture);
-            gl::GetTexLevelParameteriv(gl::TEXTURE_2D, 0, gl::TEXTURE_INTERNAL_FORMAT, &mut fmt);
-        }
-        let xr::Rect2Di { extent, .. } = texture_rect_from_bounds(texture, bounds);
+        let (fmt, width, height) = texture_format_and_size(texture);
+        let xr::Rect2Di { extent, .. } = rect_from_size_and_bounds(width, height, bounds);
 
         let fmt = match color_space {
             vr::EColorSpace::Linear => fmt,
@@ -216,14 +212,8 @@ impl GraphicsBackend for GlData {
     ) -> xr::Extent2Di {
         let swapchain_texture = self.images[image_index];
 
-        let xr::Rect2Di { extent, offset } = texture_rect_from_bounds(texture, bounds);
-
-        let mut fmt = 0;
-        unsafe {
-            gl::BindTexture(gl::TEXTURE_2D, texture);
-            gl::GetTexLevelParameteriv(gl::TEXTURE_2D, 0, gl::TEXTURE_INTERNAL_FORMAT, &mut fmt);
-            gl::BindTexture(gl::TEXTURE_2D, 0);
-        }
+        let (fmt, width, height) = texture_format_and_size(texture);
+        let xr::Rect2Di { extent, offset } = rect_from_size_and_bounds(width, height, bounds);
 
         if self.format == fmt as u32 {
             unsafe {
@@ -302,17 +292,28 @@ impl GraphicsBackend for GlData {
     }
 }
 
-fn texture_rect_from_bounds(
+// Single bind for format + size; previously each caller bound 2x. Same queries, fewer round-trips.
+#[inline]
+fn texture_format_and_size(
     texture: glx::types::GLuint,
-    bounds: vr::VRTextureBounds_t,
-) -> xr::Rect2Di {
-    let [mut height, mut width] = Default::default();
+) -> (gl::types::GLint, gl::types::GLint, gl::types::GLint) {
+    let (mut fmt, mut width, mut height) = Default::default();
     unsafe {
         gl::BindTexture(gl::TEXTURE_2D, texture);
+        gl::GetTexLevelParameteriv(gl::TEXTURE_2D, 0, gl::TEXTURE_INTERNAL_FORMAT, &mut fmt);
         gl::GetTexLevelParameteriv(gl::TEXTURE_2D, 0, gl::TEXTURE_WIDTH, &mut width);
         gl::GetTexLevelParameteriv(gl::TEXTURE_2D, 0, gl::TEXTURE_HEIGHT, &mut height);
         gl::BindTexture(gl::TEXTURE_2D, 0);
     }
+    (fmt, width, height)
+}
+
+#[inline]
+fn rect_from_size_and_bounds(
+    width: gl::types::GLint,
+    height: gl::types::GLint,
+    bounds: vr::VRTextureBounds_t,
+) -> xr::Rect2Di {
     let width_min = bounds.uMin * width as f32;
     let width_max = bounds.uMax * width as f32;
     let height_min = bounds.vMin * height as f32;
