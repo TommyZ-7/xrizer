@@ -1374,12 +1374,13 @@ impl<G: GraphicsBackend> FrameController<G> {
         }
 
         // ponytail: game-layer only dim via color scale; overlays stay bright.
-        // Box must outlive stream.end below since the layer only holds a pointer.
-        let mut _dim: Option<Box<xr::sys::CompositionLayerColorScaleBiasKHR>> = None;
+        // _dim lives until end of this function so the layer's chained pointer
+        // stays valid across stream.end below (stack storage, no per-frame alloc).
+        let mut _dim: Option<xr::sys::CompositionLayerColorScaleBiasKHR> = None;
         if color_scale_bias && proj_layer.is_some() {
             let b = crate::settings::brightness_value();
             if b < 0.999 {
-                let mut payload = Box::new(xr::sys::CompositionLayerColorScaleBiasKHR {
+                _dim = Some(xr::sys::CompositionLayerColorScaleBiasKHR {
                     ty: xr::StructureType::COMPOSITION_LAYER_COLOR_SCALE_BIAS_KHR,
                     next: std::ptr::null(),
                     color_scale: xr::Color4f {
@@ -1397,11 +1398,12 @@ impl<G: GraphicsBackend> FrameController<G> {
                 });
                 if let Some(layer) = proj_layer.take() {
                     let mut raw = layer.into_raw();
-                    payload.next = raw.next as _;
-                    raw.next = &*payload as *const _ as *const _;
+                    if let Some(payload) = _dim.as_mut() {
+                        payload.next = raw.next as _;
+                        raw.next = payload as *mut _ as *const _;
+                    }
                     proj_layer = Some(unsafe { xr::CompositionLayerProjection::from_raw(raw) });
                 }
-                _dim = Some(payload);
             }
         }
 
