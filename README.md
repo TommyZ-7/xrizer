@@ -1,5 +1,7 @@
 # xrizer - XR-ize your OpenVR games
 
+[日本語](README.ja.md) | English
+
 xrizer is a reimplementation of OpenVR on top of OpenXR. This enables you to run OpenVR games through any OpenXR runtime without running SteamVR.
 
 Note that xrizer is currently immature. Many things are likely broken, so please open bugs! For a more mature solution, check out [OpenComposite](https://gitlab.com/znixian/OpenComposite), which some of the code in this repo is based on.
